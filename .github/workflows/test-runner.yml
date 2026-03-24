@@ -1,0 +1,68 @@
+name: Chaser Runner Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      message:
+        description: 'Test message'
+        required: false
+        default: 'Hello from Chaser!'
+
+jobs:
+  test-chaser-runner:
+    runs-on: [self-hosted, chaser]
+    name: Test Chaser Runner
+    
+    steps:
+      - name: Test echo
+        run: |
+          echo "Testing Chaser runner!"
+          echo "Message: ${{ github.event.inputs.message }}"
+          echo "Repository: ${{ github.repository }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Job ID: ${{ github.job }}"
+          date -u +%Y-%m-%dT%H:%M:%SZ
+
+      - name: System info
+        run: |
+          echo "=== System Info ==="
+          echo "Hostname: $(hostname)"
+          echo "User: $(whoami)"
+          echo "OS: $(uname -s) $(uname -r)"
+          echo "CPU: $(uname -p)"
+          echo ""
+          echo "=== Environment ==="
+          echo "PATH: ${PATH:0:100}..."
+          echo "HOME: $HOME"
+          echo "Workspace: ${{ github.workspace }}"
+
+      - name: List workspace
+        run: |
+          echo "=== Workspace Contents ==="
+          ls -la
+          echo ""
+          echo "=== Git Info ==="
+          git status
+          git log --oneline -1
+
+      - name: Test performance
+        run: |
+          echo "=== Quick Performance Tests ==="
+          
+          # CPU test
+          START=$(date +%s%N)
+          for i in $(seq 1 1000000); do :; done
+          END=$(date +%s%N)
+          echo "Loop 1M iterations: $(( (END - START) / 1000000 ))ms"
+          
+          # Disk test
+          START=$(date +%s%N)
+          echo "test" > /tmp/test.txt && cat /tmp/test.txt > /dev/null && rm /tmp/test.txt
+          END=$(date +%s%N)
+          echo "Small file R/W: $(( (END - START) / 1000000 ))ms"
+
+      - name: Success
+        run: |
+          echo ""
+          echo "=== Test Complete ==="
+          echo "Chaser runner test passed!"
