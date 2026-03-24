@@ -63,7 +63,7 @@ jobs:
             df -h .
           fi
 
-      - name: Benchmark: Clone large repo (Linux kernel)
+      - name: 'Benchmark: Clone large repo (Linux kernel)'
         run: |
           echo "=== Clone Linux Kernel (1GB+) ==="
           START=$(date +%s%N)
@@ -71,7 +71,7 @@ jobs:
           END=$(date +%s%N)
           echo "Time: $(( (END - START) / 1000000 ))ms"
 
-      - name: Benchmark: Node.js operations
+      - name: 'Benchmark: Node.js operations'
         run: |
           echo "=== Node.js Operations ==="
           which node && node --version
@@ -97,19 +97,18 @@ jobs:
             "
           fi
 
-      - name: Benchmark: Python operations
+      - name: 'Benchmark: Python operations'
         run: |
           echo "=== Python Operations ==="
           which python3 && python3 --version
           
           if command -v python3 &> /dev/null; then
-            # Inline Python script using semicolons to avoid all YAML/Python indentation conflicts
             python3 -c "import json, time; start = time.time(); data = {'test': 'data', 'nested': {'a': 1, 'b':[1,2,3]}};[json.dumps(data) for _ in range(100000)]; print('JSON serialization: ' + str(int((time.time() - start) * 1000)) + 'ms')"
             
             python3 -c "import json, time; start = time.time(); data = {'test': 'data', 'nested': {'a': 1, 'b': list(range(100))}};[json.dumps(data) for _ in range(100000)]; print('JSON dumps 100k: ' + str(int((time.time() - start) * 1000)) + 'ms')"
           fi
 
-      - name: Benchmark: Rust compilation
+      - name: 'Benchmark: Rust compilation'
         run: |
           echo "=== Rust Compilation ==="
           which cargo && cargo --version
@@ -122,7 +121,7 @@ jobs:
             cd rust-test
             
             # Add dependencies
-            echo 'serde = { version = "1.0", features = ["derive"] }
+            echo 'serde = { version = "1.0", features =["derive"] }
             serde_json = "1.0"' >> Cargo.toml
             
             # Add benchmark code
@@ -157,7 +156,7 @@ jobs:
             echo "Cargo build time: $(( (END - START) / 1000000 ))ms"
           fi
 
-      - name: Benchmark: File I/O
+      - name: 'Benchmark: File I/O'
         run: |
           echo "=== File I/O Benchmark ==="
           
@@ -182,7 +181,7 @@ jobs:
           END=$(date +%s%N)
           echo "Create 1000 files: $(( (END - START) / 1000000 ))ms"
 
-      - name: Benchmark: Network speed
+      - name: 'Benchmark: Network speed'
         run: |
           echo "=== Network Speed Test ==="
           
@@ -224,7 +223,7 @@ jobs:
   # Blacksmith Runner benchmark  
   benchmark-blacksmith:
     if: inputs.runner_type == 'blacksmith'
-    runs-on:[self-hosted, blacksmith]
+    runs-on: [self-hosted, blacksmith]
     name: Blacksmith Runner Benchmark
     
     steps:
