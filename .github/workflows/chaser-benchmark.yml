@@ -6,9 +6,10 @@ on:
       runner_type:
         description: 'Runner type to test'
         required: true
-        default: 'chaser'
+        default: 'all'
         type: choice
         options:
+          - all
           - chaser
           - standard
           - blacksmith
@@ -23,13 +24,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Benchmark Chaser Sandbox as Runner
-  benchmark-chaser:
-    if: ${{ github.event.inputs.runner_type == 'chaser' || github.event.inputs.runner_type == '' }}
-    runs-on:
-      - self-hosted
-      - chaser
-    name: 'Chaser Runner Benchmark'
+  # This single job runs for every runner defined in the matrix
+  run-benchmarks:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: chaser
+            name: 'Chaser Sandbox'
+            labels: [self-hosted, chaser]
+          - id: standard
+            name: 'GitHub Standard'
+            labels: ubuntu-latest
+          - id: blacksmith
+            name: 'Blacksmith'
+            labels: blacksmith-2vcpu-ubuntu-2404
+          - id: depo
+            name: 'Depo'
+            labels: depot-ubuntu-24.04
+    
+    # Only run the specific runner selected, OR all of them if 'all' is selected
+    if: ${{ github.event.inputs.runner_type == 'all' || github.event.inputs.runner_type == matrix.id }}
+    runs-on: ${{ matrix.labels }}
+    name: Benchmark (${{ matrix.name }})
     
     steps:
       - name: 'Checkout code'
@@ -37,7 +54,7 @@ jobs:
 
       - name: 'Display runner info'
         run: |
-          echo "Runner: Chaser Sandbox"
+          echo "Runner Type: ${{ matrix.name }}"
           echo "Session ID: ${{ github.event.inputs.session_id || 'dispatched' }}"
           echo "Started at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -45,31 +62,22 @@ jobs:
         run: |
           echo "=== System Info ==="
           uname -a
-          echo ""
           echo "=== CPU Info ==="
           if command -v sysctl &> /dev/null; then
             sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "CPU info not available"
           else
             cat /proc/cpuinfo 2>/dev/null | grep "model name" | head -1 || echo "CPU info not available"
           fi
-          echo ""
           echo "=== Memory ==="
-          if command -v free &> /dev/null; then
-            free -h
-          elif command -v vm_stat &> /dev/null; then
-            vm_stat
-          fi
-          echo ""
+          free -h || vm_stat
           echo "=== Disk ==="
-          if command -v df &> /dev/null; then
-            df -h .
-          fi
+          df -h .
 
       - name: 'Benchmark: Clone large repo'
         run: |
           echo "=== Clone Linux Kernel (1GB+) ==="
           START=$(date +%s%N)
-          git clone --depth 1 https://github.com/torvalds/linux.git /tmp/linux-test 2>&1 | tail -5
+          git clone --depth 1 https://github.com/torvalds/linux.git /tmp/linux-test-${{ matrix.id }} 2>&1 | tail -5
           END=$(date +%s%N)
           echo "Time: $(( (END - START) / 1000000 ))ms"
 
@@ -77,8 +85,8 @@ jobs:
         run: |
           echo "=== Node.js Operations ==="
           if command -v node &> /dev/null; then
-            mkdir -p /tmp/node-test
-            cd /tmp/node-test
+            mkdir -p /tmp/node-test-${{ matrix.id }}
+            cd /tmp/node-test-${{ matrix.id }}
             npm init -y > /dev/null 2>&1
             START=$(date +%s%N)
             npm install lodash express 2>&1 | tail -3
@@ -94,84 +102,41 @@ jobs:
             python3 -c "import json, time; start = time.time(); data = {'test': 'data', 'nested': {'a': 1, 'b':[1,2,3]}}; [json.dumps(data) for _ in range(100000)]; print('JSON serialization: ' + str(int((time.time() - start) * 1000)) + 'ms')"
           fi
 
-      - name: 'Benchmark: Rust compilation'
-        run: |
-          echo "=== Rust Compilation ==="
-          if command -v cargo &> /dev/null; then
-            cd /tmp
-            rm -rf rust-test
-            cargo new rust-test > /dev/null 2>&1
-            cd rust-test
-            echo 'serde = { version = "1.0", features = ["derive"] }' >> Cargo.toml
-            echo 'serde_json = "1.0"' >> Cargo.toml
-            START=$(date +%s%N)
-            cargo build --release 2>&1 | tail -5
-            END=$(date +%s%N)
-            echo "Cargo build time: $(( (END - START) / 1000000 ))ms"
-          fi
-
       - name: 'Benchmark: File I/O'
         run: |
           echo "=== File I/O Benchmark ==="
           START=$(date +%s%N)
-          dd if=/dev/urandom of=/tmp/testfile bs=1M count=100 2>&1 | tail -1
+          dd if=/dev/urandom of=/tmp/testfile-${{ matrix.id }} bs=1M count=100 2>&1 | tail -1
           END=$(date +%s%N)
           echo "Write 100MB: $(( (END - START) / 1000000 ))ms"
+          
+          START=$(date +%s%N)
+          cat /tmp/testfile-${{ matrix.id }} > /dev/null
+          END=$(date +%s%N)
+          echo "Read 100MB: $(( (END - START) / 1000000 ))ms"
 
       - name: 'Benchmark: Network speed'
         run: |
           echo "=== Network Speed Test ==="
           START=$(date +%s%N)
+          # Using a 100MB file from Hetzner for testing
           curl -s -o /dev/null https://ash-speed.hetzner.com/100MB.bin 2>&1
           END=$(date +%s%N)
           echo "Download 100MB: $(( (END - START) / 1000000 ))ms"
 
       - name: 'Cleanup'
+        if: always()
         run: |
-          rm -rf /tmp/linux-test /tmp/node-test /tmp/rust-test /tmp/testfile
+          rm -rf /tmp/linux-test-${{ matrix.id }} /tmp/node-test-${{ matrix.id }} /tmp/testfile-${{ matrix.id }}
           echo "Cleanup complete"
 
-  benchmark-standard:
-    if: ${{ github.event.inputs.runner_type == 'standard' }}
-    runs-on: ubuntu-latest
-    name: 'Standard Runner Benchmark'
-    steps:
-      - uses: actions/checkout@v4
-      - name: 'Run benchmarks'
-        run: "date -u +%Y-%m-%dT%H:%M:%SZ"
-
-  benchmark-blacksmith:
-    if: ${{ github.event.inputs.runner_type == 'blacksmith' }}
-    runs-on:
-      - blacksmith-2vcpu-ubuntu-2404
-    name: 'Blacksmith Runner Benchmark'
-    steps:
-      - uses: actions/checkout@v4
-      - name: 'Run benchmarks'
-        run: "date -u +%Y-%m-%dT%H:%M:%SZ"
-
-  benchmark-depo:
-    if: ${{ github.event.inputs.runner_type == 'depo' }}
-    runs-on:
-      - depot-ubuntu-24.04
-    name: 'Depo Runner Benchmark'
-    steps:
-      - uses: actions/checkout@v4
-      - name: 'Run benchmarks'
-        run: "date -u +%Y-%m-%dT%H:%M:%SZ"
-
+  # Final Summary Job
   compare-runners:
-    needs:
-      - benchmark-chaser
-      - benchmark-standard
-      - benchmark-blacksmith
-      - benchmark-depo
+    needs: run-benchmarks
     if: always()
     runs-on: ubuntu-latest
-    name: 'Results Summary'
     steps:
-      - name: 'Generate comparison report'
+      - name: 'Complete'
         run: |
-          echo "=== Benchmark Results Summary ==="
-          echo "Runner Type Tested: ${{ github.event.inputs.runner_type || 'chaser' }}"
-          echo "Run ID: ${{ github.run_id }}"
+          echo "Benchmark run ${{ github.run_id }} finished."
+          echo "Mode: ${{ github.event.inputs.runner_type }}"
