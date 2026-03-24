@@ -24,29 +24,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # This single job runs for every runner defined in the matrix
+  # STEP 1: Determine which runners to include in the test
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - id: set-matrix
+        run: |
+          # Define all possible runners
+          CHASER='{"id":"chaser","name":"Chaser Sandbox","labels":["self-hosted","chaser"]}'
+          STANDARD='{"id":"standard","name":"GitHub Standard","labels":"ubuntu-latest"}'
+          BLACKSMITH='{"id":"blacksmith","name":"Blacksmith","labels":"blacksmith-2vcpu-ubuntu-2404"}'
+          DEPO='{"id":"depo","name":"Depo","labels":"depot-ubuntu-24.04"}'
+          
+          CHOICE="${{ github.event.inputs.runner_type }}"
+          
+          if [ "$CHOICE" = "all" ]; then
+            JSON="{\"include\":[$CHASER,$STANDARD,$BLACKSMITH,$DEPO]}"
+          elif [ "$CHOICE" = "chaser" ]; then
+            JSON="{\"include\":[$CHASER]}"
+          elif [ "$CHOICE" = "standard" ]; then
+            JSON="{\"include\":[$STANDARD]}"
+          elif [ "$CHOICE" = "blacksmith" ]; then
+            JSON="{\"include\":[$BLACKSMITH]}"
+          else
+            JSON="{\"include\":[$DEPO]}"
+          fi
+          
+          echo "matrix=$JSON" >> $GITHUB_OUTPUT
+
+  # STEP 2: Run the benchmarks on the selected runners
   run-benchmarks:
+    needs: setup
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - id: chaser
-            name: 'Chaser Sandbox'
-            labels: [self-hosted, chaser]
-          - id: standard
-            name: 'GitHub Standard'
-            labels: ubuntu-latest
-          - id: blacksmith
-            name: 'Blacksmith'
-            labels: blacksmith-2vcpu-ubuntu-2404
-          - id: depo
-            name: 'Depo'
-            labels: depot-ubuntu-24.04
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
     
-    # Only run the specific runner selected, OR all of them if 'all' is selected
-    if: ${{ github.event.inputs.runner_type == 'all' || github.event.inputs.runner_type == matrix.id }}
     runs-on: ${{ matrix.labels }}
-    name: Benchmark (${{ matrix.name }})
+    name: 'Benchmark: ${{ matrix.name }}'
     
     steps:
       - name: 'Checkout code'
@@ -56,7 +72,7 @@ jobs:
         run: |
           echo "Runner Type: ${{ matrix.name }}"
           echo "Session ID: ${{ github.event.inputs.session_id || 'dispatched' }}"
-          echo "Started at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "Started at: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
       - name: 'Environment info'
         run: |
@@ -69,7 +85,7 @@ jobs:
             cat /proc/cpuinfo 2>/dev/null | grep "model name" | head -1 || echo "CPU info not available"
           fi
           echo "=== Memory ==="
-          free -h || vm_stat
+          free -h 2>/dev/null || vm_stat
           echo "=== Disk ==="
           df -h .
 
@@ -77,7 +93,8 @@ jobs:
         run: |
           echo "=== Clone Linux Kernel (1GB+) ==="
           START=$(date +%s%N)
-          git clone --depth 1 https://github.com/torvalds/linux.git /tmp/linux-test-${{ matrix.id }} 2>&1 | tail -5
+          # Use unique folder names to avoid collisions if runners share disk
+          git clone --depth 1 https://github.com/torvalds/linux.git "/tmp/linux-test-${{ matrix.id }}" 2>&1 | tail -5
           END=$(date +%s%N)
           echo "Time: $(( (END - START) / 1000000 ))ms"
 
@@ -85,8 +102,8 @@ jobs:
         run: |
           echo "=== Node.js Operations ==="
           if command -v node &> /dev/null; then
-            mkdir -p /tmp/node-test-${{ matrix.id }}
-            cd /tmp/node-test-${{ matrix.id }}
+            mkdir -p "/tmp/node-test-${{ matrix.id }}"
+            cd "/tmp/node-test-${{ matrix.id }}"
             npm init -y > /dev/null 2>&1
             START=$(date +%s%N)
             npm install lodash express 2>&1 | tail -3
@@ -106,12 +123,12 @@ jobs:
         run: |
           echo "=== File I/O Benchmark ==="
           START=$(date +%s%N)
-          dd if=/dev/urandom of=/tmp/testfile-${{ matrix.id }} bs=1M count=100 2>&1 | tail -1
+          dd if=/dev/urandom of="/tmp/testfile-${{ matrix.id }}" bs=1M count=100 2>&1 | tail -1
           END=$(date +%s%N)
           echo "Write 100MB: $(( (END - START) / 1000000 ))ms"
           
           START=$(date +%s%N)
-          cat /tmp/testfile-${{ matrix.id }} > /dev/null
+          cat "/tmp/testfile-${{ matrix.id }}" > /dev/null
           END=$(date +%s%N)
           echo "Read 100MB: $(( (END - START) / 1000000 ))ms"
 
@@ -119,7 +136,6 @@ jobs:
         run: |
           echo "=== Network Speed Test ==="
           START=$(date +%s%N)
-          # Using a 100MB file from Hetzner for testing
           curl -s -o /dev/null https://ash-speed.hetzner.com/100MB.bin 2>&1
           END=$(date +%s%N)
           echo "Download 100MB: $(( (END - START) / 1000000 ))ms"
@@ -127,16 +143,17 @@ jobs:
       - name: 'Cleanup'
         if: always()
         run: |
-          rm -rf /tmp/linux-test-${{ matrix.id }} /tmp/node-test-${{ matrix.id }} /tmp/testfile-${{ matrix.id }}
+          rm -rf "/tmp/linux-test-${{ matrix.id }}" "/tmp/node-test-${{ matrix.id }}" "/tmp/testfile-${{ matrix.id }}"
           echo "Cleanup complete"
 
-  # Final Summary Job
-  compare-runners:
+  # STEP 3: Simple completion summary
+  results-summary:
     needs: run-benchmarks
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: 'Complete'
+      - name: 'Summary'
         run: |
-          echo "Benchmark run ${{ github.run_id }} finished."
+          echo "Benchmark Run Complete"
           echo "Mode: ${{ github.event.inputs.runner_type }}"
+          echo "Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
