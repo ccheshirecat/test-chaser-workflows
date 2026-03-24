@@ -13,6 +13,10 @@ on:
           - standard
           - blacksmith
           - depo
+      session_id:
+        description: 'Session ID'
+        required: false
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -21,7 +25,7 @@ concurrency:
 jobs:
   # Benchmark Chaser Sandbox as Runner
   benchmark-chaser:
-    if: github.event.inputs.runner_type == 'chaser' || github.event.inputs.runner_type == ''
+    if: inputs.runner_type == 'chaser' || inputs.runner_type == ''
     runs-on: [self-hosted, chaser]
     name: Chaser Runner Benchmark
     
@@ -32,7 +36,7 @@ jobs:
       - name: Display runner info
         run: |
           echo "Runner: Chaser Sandbox"
-          echo "Session ID: ${{ github.event.inputs.session_id || 'dispatched' }}"
+          echo "Session ID: ${{ inputs.session_id || 'dispatched' }}"
           echo "Started at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
       - name: Environment info
@@ -102,12 +106,16 @@ jobs:
             START=$(date +%s%N)
             python3 -c "
 import json
+import time
+
+start = time.time()
 data = {'test': 'data', 'nested': {'a': 1, 'b': [1,2,3]}}
 for i in range(100000):
     json.dumps(data)
-print('JSON serialization: ' + str((Date.now() - start) if 'start' in dir() else 'N/A') + 'ms')
+print('JSON serialization: ' + str(int((time.time() - start) * 1000)) + 'ms')
 "
             END=$(date +%s%N)
+            
             python3 -c "
 import time
 start = time.time()
@@ -200,11 +208,11 @@ EOF
         run: |
           echo "=== Network Speed Test ==="
           
-          # Download speed test
+          # Download speed test (Swapped roughly 2GB ISO for a 100MB test bin file)
           START=$(date +%s%N)
-          curl -s -o /dev/null https://releases.ubuntu.com/22.04/ubuntu-22.04.3-live-server-amd64.iso 2>&1
+          curl -s -o /dev/null https://speed.hetzner.de/100MB.bin 2>&1
           END=$(date +%s%N)
-          echo "Download ~80MB: $(( (END - START) / 1000000 ))ms"
+          echo "Download 100MB: $(( (END - START) / 1000000 ))ms"
           
           # Ping test
           ping -c 5 8.8.8.8 2>/dev/null | tail -1
@@ -222,7 +230,7 @@ EOF
 
   # Standard GitHub Runner benchmark
   benchmark-standard:
-    if: github.event.inputs.runner_type == 'standard'
+    if: inputs.runner_type == 'standard'
     runs-on: ubuntu-latest
     name: Standard Runner Benchmark
     
@@ -237,7 +245,7 @@ EOF
 
   # Blacksmith Runner benchmark  
   benchmark-blacksmith:
-    if: github.event.inputs.runner_type == 'blacksmith'
+    if: inputs.runner_type == 'blacksmith'
     runs-on: [self-hosted, blacksmith]
     name: Blacksmith Runner Benchmark
     
@@ -252,7 +260,7 @@ EOF
 
   # Depo Runner benchmark
   benchmark-depo:
-    if: github.event.inputs.runner_type == 'depo'
+    if: inputs.runner_type == 'depo'
     runs-on: [self-hosted, depo]
     name: Depo Runner Benchmark
     
@@ -267,7 +275,7 @@ EOF
 
   # Compare all runners
   compare-runners:
-    needs: [benchmark-chaser]
+    needs:[benchmark-chaser, benchmark-standard, benchmark-blacksmith, benchmark-depo]
     if: always()
     runs-on: ubuntu-latest
     name: Results Summary
@@ -275,12 +283,12 @@ EOF
     steps:
       - name: Generate comparison report
         run: |
-          echo "=== Chaser Sandbox Runner Benchmark Results ==="
+          echo "=== Benchmark Results Summary ==="
           echo ""
           echo "| Metric | Value |"
           echo "|--------|-------|"
-          echo "| Runner Type | Chaser Sandbox |"
+          echo "| Runner Type Tested | ${{ inputs.runner_type || 'chaser' }} |"
           echo "| Date | $(date -u +%Y-%m-%d) |"
           echo "| Workflow Run | ${{ github.run_id }} |"
           echo ""
-          echo "View detailed logs in the benchmark-chaser job above."
+          echo "View detailed logs in the respective benchmark job above."
