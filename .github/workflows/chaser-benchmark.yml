@@ -142,7 +142,9 @@ jobs:
 
   benchmark-blacksmith:
     if: ${{ github.event.inputs.runner_type == 'blacksmith' }}
-    runs-on: blacksmith
+    runs-on:
+      - self-hosted
+      - blacksmith
     name: 'Blacksmith Runner Benchmark'
     steps:
       - uses: actions/checkout@v4
@@ -151,7 +153,9 @@ jobs:
 
   benchmark-depo:
     if: ${{ github.event.inputs.runner_type == 'depo' }}
-    runs-on: depo
+    runs-on:
+      - self-hosted
+      - depo
     name: 'Depo Runner Benchmark'
     steps:
       - uses: actions/checkout@v4
