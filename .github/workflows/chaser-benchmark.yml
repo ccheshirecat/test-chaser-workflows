@@ -121,7 +121,7 @@ jobs:
             cd rust-test
             
             # Add dependencies
-            echo 'serde = { version = "1.0", features =["derive"] }
+            echo 'serde = { version = "1.0", features = ["derive"] }
             serde_json = "1.0"' >> Cargo.toml
             
             # Add benchmark code
@@ -238,7 +238,7 @@ jobs:
   # Depo Runner benchmark
   benchmark-depo:
     if: inputs.runner_type == 'depo'
-    runs-on: [self-hosted, depo]
+    runs-on:[self-hosted, depo]
     name: Depo Runner Benchmark
     
     steps:
@@ -252,7 +252,7 @@ jobs:
 
   # Compare all runners
   compare-runners:
-    needs:[benchmark-chaser, benchmark-standard, benchmark-blacksmith, benchmark-depo]
+    needs: [benchmark-chaser, benchmark-standard, benchmark-blacksmith, benchmark-depo]
     if: always()
     runs-on: ubuntu-latest
     name: Results Summary
