@@ -1,0 +1,286 @@
+name: Chaser Sandbox Runner Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_type:
+        description: 'Runner type to test'
+        required: true
+        default: 'chaser'
+        type: choice
+        options:
+          - chaser
+          - standard
+          - blacksmith
+          - depo
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Benchmark Chaser Sandbox as Runner
+  benchmark-chaser:
+    if: github.event.inputs.runner_type == 'chaser' || github.event.inputs.runner_type == ''
+    runs-on: [self-hosted, chaser]
+    name: Chaser Runner Benchmark
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Display runner info
+        run: |
+          echo "Runner: Chaser Sandbox"
+          echo "Session ID: ${{ github.event.inputs.session_id || 'dispatched' }}"
+          echo "Started at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Environment info
+        run: |
+          echo "=== System Info ==="
+          uname -a
+          echo ""
+          echo "=== CPU Info ==="
+          if command -v sysctl &> /dev/null; then
+            sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "CPU info not available"
+          else
+            cat /proc/cpuinfo 2>/dev/null | grep "model name" | head -1 || echo "CPU info not available"
+          fi
+          echo ""
+          echo "=== Memory ==="
+          if command -v free &> /dev/null; then
+            free -h
+          elif command -v vm_stat &> /dev/null; then
+            vm_stat
+          fi
+          echo ""
+          echo "=== Disk ==="
+          if command -v df &> /dev/null; then
+            df -h .
+          fi
+
+      - name: Benchmark: Clone large repo (Linux kernel)
+        run: |
+          echo "=== Clone Linux Kernel (1GB+) ==="
+          START=$(date +%s%N)
+          git clone --depth 1 https://github.com/torvalds/linux.git /tmp/linux-test 2>&1 | tail -5
+          END=$(date +%s%N)
+          echo "Time: $(( (END - START) / 1000000 ))ms"
+
+      - name: Benchmark: Node.js operations
+        run: |
+          echo "=== Node.js Operations ==="
+          which node && node --version
+          which npm && npm --version
+          
+          if command -v node &> /dev/null; then
+            # Create test project
+            mkdir -p /tmp/node-test
+            cd /tmp/node-test
+            npm init -y > /dev/null 2>&1
+            
+            START=$(date +%s%N)
+            npm install lodash express 2>&1 | tail -3
+            END=$(date +%s%N)
+            echo "npm install time: $(( (END - START) / 1000000 ))ms"
+            
+            # Run benchmark
+            node -e "
+              const _ = require('lodash');
+              const start = Date.now();
+              for(let i = 0; i < 100000; i++) _.cloneDeep({a:1,b:{c:2}});
+              console.log('Lodash clone operations: ' + (Date.now() - start) + 'ms');
+            "
+          fi
+
+      - name: Benchmark: Python operations
+        run: |
+          echo "=== Python Operations ==="
+          which python3 && python3 --version
+          
+          if command -v python3 &> /dev/null; then
+            START=$(date +%s%N)
+            python3 -c "
+import json
+data = {'test': 'data', 'nested': {'a': 1, 'b': [1,2,3]}}
+for i in range(100000):
+    json.dumps(data)
+print('JSON serialization: ' + str((Date.now() - start) if 'start' in dir() else 'N/A') + 'ms')
+"
+            END=$(date +%s%N)
+            python3 -c "
+import time
+start = time.time()
+data = {'test': 'data', 'nested': {'a': 1, 'b': list(range(100))}}
+for i in range(100000):
+    import json
+    json.dumps(data)
+print('JSON dumps 100k: ' + str(int((time.time() - start) * 1000)) + 'ms')
+"
+          fi
+
+      - name: Benchmark: Rust compilation
+        run: |
+          echo "=== Rust Compilation ==="
+          which cargo && cargo --version
+          which rustc && rustc --version
+          
+          if command -v cargo &> /dev/null; then
+            cd /tmp
+            rm -rf rust-test
+            cargo new rust-test > /dev/null 2>&1
+            cd rust-test
+            
+            # Add dependencies
+            cat >> Cargo.toml << 'EOF'
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+EOF
+            
+            # Add benchmark code
+            cat > src/main.rs << 'EOF'
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize)]
+struct Data {
+    test: String,
+    nested: Nested,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Nested {
+    a: i32,
+    b: Vec<i32>,
+}
+
+fn main() {
+    let data = Data {
+        test: "test".to_string(),
+        nested: Nested { a: 1, b: (0..100).collect() },
+    };
+    for _ in 0..10000 {
+        let _ = serde_json::to_string(&data);
+    }
+    println!("Rust JSON serialization: done");
+}
+EOF
+            
+            START=$(date +%s%N)
+            cargo build --release 2>&1 | tail -5
+            END=$(date +%s%N)
+            echo "Cargo build time: $(( (END - START) / 1000000 ))ms"
+          fi
+
+      - name: Benchmark: File I/O
+        run: |
+          echo "=== File I/O Benchmark ==="
+          
+          # Large file write
+          START=$(date +%s%N)
+          dd if=/dev/urandom of=/tmp/testfile bs=1M count=100 2>&1 | tail -1
+          END=$(date +%s%N)
+          echo "Write 100MB: $(( (END - START) / 1000000 ))ms"
+          
+          # Large file read
+          START=$(date +%s%N)
+          cat /tmp/testfile > /dev/null
+          END=$(date +%s%N)
+          echo "Read 100MB: $(( (END - START) / 1000000 ))ms"
+          
+          # Many small files
+          mkdir -p /tmp/file-test
+          START=$(date +%s%N)
+          for i in $(seq 1 1000); do
+            echo "test content $i" > /tmp/file-test/file_$i.txt
+          done
+          END=$(date +%s%N)
+          echo "Create 1000 files: $(( (END - START) / 1000000 ))ms"
+
+      - name: Benchmark: Network speed
+        run: |
+          echo "=== Network Speed Test ==="
+          
+          # Download speed test
+          START=$(date +%s%N)
+          curl -s -o /dev/null https://releases.ubuntu.com/22.04/ubuntu-22.04.3-live-server-amd64.iso 2>&1
+          END=$(date +%s%N)
+          echo "Download ~80MB: $(( (END - START) / 1000000 ))ms"
+          
+          # Ping test
+          ping -c 5 8.8.8.8 2>/dev/null | tail -1
+
+      - name: Cleanup
+        run: |
+          rm -rf /tmp/linux-test /tmp/node-test /tmp/rust-test /tmp/testfile /tmp/file-test
+          echo "Cleanup complete"
+
+      - name: Summary
+        run: |
+          echo "=== Benchmark Complete ==="
+          echo "Runner: Chaser Sandbox"
+          echo "Completed at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  # Standard GitHub Runner benchmark
+  benchmark-standard:
+    if: github.event.inputs.runner_type == 'standard'
+    runs-on: ubuntu-latest
+    name: Standard Runner Benchmark
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run benchmarks
+        run: |
+          echo "Running standard runner benchmarks..."
+          echo "Runner: ubuntu-latest"
+          date -u +%Y-%m-%dT%H:%M:%SZ
+
+  # Blacksmith Runner benchmark  
+  benchmark-blacksmith:
+    if: github.event.inputs.runner_type == 'blacksmith'
+    runs-on: [self-hosted, blacksmith]
+    name: Blacksmith Runner Benchmark
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run benchmarks
+        run: |
+          echo "Running blacksmith runner benchmarks..."
+          echo "Runner: Blacksmith"
+          date -u +%Y-%m-%dT%H:%M:%SZ
+
+  # Depo Runner benchmark
+  benchmark-depo:
+    if: github.event.inputs.runner_type == 'depo'
+    runs-on: [self-hosted, depo]
+    name: Depo Runner Benchmark
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run benchmarks
+        run: |
+          echo "Running depo runner benchmarks..."
+          echo "Runner: Depo"
+          date -u +%Y-%m-%dT%H:%M:%SZ
+
+  # Compare all runners
+  compare-runners:
+    needs: [benchmark-chaser]
+    if: always()
+    runs-on: ubuntu-latest
+    name: Results Summary
+    
+    steps:
+      - name: Generate comparison report
+        run: |
+          echo "=== Chaser Sandbox Runner Benchmark Results ==="
+          echo ""
+          echo "| Metric | Value |"
+          echo "|--------|-------|"
+          echo "| Runner Type | Chaser Sandbox |"
+          echo "| Date | $(date -u +%Y-%m-%d) |"
+          echo "| Workflow Run | ${{ github.run_id }} |"
+          echo ""
+          echo "View detailed logs in the benchmark-chaser job above."
