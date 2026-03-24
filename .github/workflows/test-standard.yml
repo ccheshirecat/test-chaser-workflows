@@ -1,0 +1,26 @@
+name: Standard Runner Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-standard-runner:
+    runs-on: ubuntu-latest
+    name: Test Standard Runner
+    
+    steps:
+      - name: Test echo
+        run: |
+          echo "Testing standard GitHub runner!"
+          date -u +%Y-%m-%dT%H:%M:%SZ
+
+      - name: System info
+        run: |
+          echo "=== System Info ==="
+          echo "Runner: ubuntu-latest"
+          hostname
+          cat /etc/os-release | head -5
+
+      - name: Success
+        run: |
+          echo "Standard runner test passed!"
