@@ -10,6 +10,9 @@ on:
         type: choice
         options: [all, chaser, standard, blacksmith]
 
+env:
+  RESULTS_JSON: "{}"
+
 jobs:
   setup:
     runs-on: ubuntu-latest
@@ -35,46 +38,384 @@ jobs:
     runs-on: ${{ matrix.labels }}
     name: 'Bench: ${{ matrix.name }}'
     steps:
-      - name: '1. RAW CPU: Parallel Compression'
+      - name: 0. System Info
+        id: sysinfo
         run: |
-          echo "=== Generating 500MB Data & Compressing (Multi-threaded) ==="
-          # This tests raw clock speed and multi-core IPC
+          echo "=== System Information ==="
+          CPU_CORES=$(nproc)
+          CPU_MODEL=$(cat /proc/cpuinfo | grep "model name" | head -1 | cut -d: -f2 | xargs)
+          MEM_TOTAL=$(free -h | grep Mem | awk '{print $2}')
+          DISK_SPACE=$(df -h / | tail -1 | awk '{print $4}')
+          OS_NAME=$(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | xargs)
+          echo "CPU Cores: $CPU_CORES"
+          echo "CPU Model: $CPU_MODEL"
+          echo "Memory: $MEM_TOTAL"
+          echo "Disk: $DISK_SPACE"
+          echo "OS: $OS_NAME"
+          echo "sysinfo=$CPU_CORES cores, $CPU_MODEL" >> $GITHUB_OUTPUT
+
+      - name: '1. CPU: Sysbench Prime Numbers'
+        id: bench1
+        run: |
+          echo "=== CPU: Sysbench Prime Numbers (Single Thread) ==="
+          if command -v sysbench &> /dev/null; then
+            RESULT=$(sysbench cpu --cpu-max-prime=20000 run | grep "events per second" | awk '{print $4}')
+            echo "Sysbench: $RESULT events/sec"
+            echo "bench1=$RESULT events/sec" >> $GITHUB_OUTPUT
+          else
+            START=$(date +%s%N)
+            for i in $(seq 1 1000); do prime=1; for j in $(seq 2 $((i/2))); do [ $((i % j)) -eq 0 ] && prime=0 && break; done; done
+            END=$(date +%s%N)
+            TIME=$(( (END - START) / 1000000 ))
+            echo "Prime calc (1000 iterations): ${TIME}ms"
+            echo "bench1=${TIME}ms" >> $GITHUB_OUTPUT
+          fi
+
+      - name: '2. CPU: Multi-threaded Compression (XZ)'
+        id: bench2
+        run: |
+          echo "=== CPU: 500MB Parallel Compression (XZ - Multi-threaded) ==="
+          echo "Tests raw clock speed and multi-core IPC"
           START=$(date +%s%N)
           dd if=/dev/urandom bs=1M count=500 of=testdata 2>/dev/null
           tar -cf - testdata | xz -T0 -3 > testdata.xz
           END=$(date +%s%N)
-          echo "XZ Compression Time: $(( (END - START) / 1000000 ))ms"
+          TIME=$(( (END - START) / 1000000 ))
+          echo "XZ Compression Time: ${TIME}ms"
+          echo "bench2=${TIME}ms" >> $GITHUB_OUTPUT
 
-      - name: '2. RAW CPU: OpenSSL Speed'
+      - name: '3. CPU: OpenSSL RSA/ECDSA Speed'
         run: |
-          echo "=== OpenSSL RSA 4096 Sign/Verify (Single Core Frequency) ==="
-          openssl speed rsa4096 | grep -A 1 "verify"
+          echo "=== CPU: OpenSSL RSA 4096 Sign/Verify ==="
+          openssl speed rsa4096 2>&1 | grep -E "^(rsa|sign|verify)" | head -5
+          echo ""
+          echo "=== CPU: OpenSSL AES-256-GCM ==="
+          openssl speed -evp aes-256-gcm 2>&1 | tail -3
 
-      - name: '3. DISK: Random 4k Write (IOPS Test)'
+      - name: '4. CPU: Python Computational'
         run: |
-          echo "=== Small File Creation (4k Random Writes) ==="
-          # This exposes the 'Overlay' bottleneck.
+          echo "=== CPU: Python Fibonacci (Single Core) ==="
+          python3 -c "
+          import time
+          def fib(n):
+              if n < 2: return n
+              return fib(n-1) + fib(n-2)
+          start = time.time()
+          [fib(35) for _ in range(3)]
+          print(f'Python Fib(35)x3: {((time.time()-start)*1000):.0f}ms')
+          "
+          echo "=== CPU: Python SHA256 Hashing ==="
+          python3 -c "
+          import hashlib, time
+          data = b'testdata' * 10000
+          start = time.time()
+          for _ in range(1000): hashlib.sha256(data).hexdigest()
+          print(f'SHA256 x1000: {((time.time()-start)*1000):.0f}ms')
+          "
+
+      - name: '5. DISK: Sequential Write (1GB)'
+        id: bench5
+        run: |
+          echo "=== DISK: Sequential Write (1GB) ==="
+          START=$(date +%s%N)
+          dd if=/dev/zero bs=1M count=1024 of=bench_1gb 2>/dev/null
+          sync
+          END=$(date +%s%N)
+          TIME=$(( (END - START) / 1000000 ))
+          echo "1GB Sequential Write: ${TIME}ms"
+          echo "bench5=${TIME}ms" >> $GITHUB_OUTPUT
+
+      - name: '6. DISK: Sequential Read (1GB)'
+        id: bench6
+        run: |
+          echo "=== DISK: Sequential Read (1GB) ==="
+          START=$(date +%s%N)
+          dd if=bench_1gb bs=1M of=/dev/null 2>/dev/null
+          END=$(date +%s%N)
+          TIME=$(( (END - START) / 1000000 ))
+          echo "1GB Sequential Read: ${TIME}ms"
+          echo "bench6=${TIME}ms" >> $GITHUB_OUTPUT
+
+      - name: '7. DISK: Small File IOPS (10k files)'
+        id: bench7
+        run: |
+          echo "=== DISK: Small File Creation (10k files - IOPS Test) ==="
+          echo "This exposes overlay filesystem bottlenecks"
           START=$(date +%s%N)
           mkdir -p bench-iops && cd bench-iops
-          for i in {1..5000}; do echo "data" > file_$i.txt; done
+          for i in $(seq 1 10000); do echo "data$i" > file_$i.txt; done
+          cd ..
           END=$(date +%s%N)
-          echo "IOPS 5000 files: $(( (END - START) / 1000000 ))ms"
+          TIME=$(( (END - START) / 1000000 ))
+          IOPS=$(( 10000 * 1000 / TIME ))
+          echo "10k Small Files Write: ${TIME}ms"
+          echo "IOPS: $IOPS files/sec"
+          echo "bench7=${TIME}ms" >> $GITHUB_OUTPUT
 
-      - name: '4. MEMORY: Bandwidth'
+      - name: '8. DISK: File Metadata Operations'
         run: |
-          echo "=== Memory Copy Speed ==="
-          if command -v dd &> /dev/null; then
-            dd if=/dev/zero of=/dev/null bs=1M count=10000 2>&1 | tail -n 1
+          echo "=== DISK: stat() on 10k files ==="
+          cd bench-iops
+          START=$(date +%s%N)
+          for i in $(seq 1 10000); do stat file_$i.txt > /dev/null 2>&1; done
+          END=$(date +%s%N)
+          echo "10k stat() calls: $(( (END - START) / 1000000 ))ms"
+          cd ..
+
+      - name: '9. MEMORY: Bandwidth (dd)'
+        run: |
+          echo "=== MEMORY: dd Memory Copy (10GB) ==="
+          dd if=/dev/zero of=/dev/null bs=1M count=10240 2>&1 | tail -n 1
+
+      - name: '10. MEMORY: Python NumPy Operations'
+        run: |
+          echo "=== MEMORY: Python NumPy Matrix Multiplication ==="
+          if command -v python3 &> /dev/null; then
+            python3 -c "
+            import numpy as np, time
+            a = np.random.rand(2000, 2000)
+            b = np.random.rand(2000, 2000)
+            start = time.time()
+            c = np.matmul(a, b)
+            print(f'NumPy 2000x2000 matmul: {((time.time()-start)*1000):.0f}ms')
+            " 2>/dev/null || echo "NumPy not installed, skipping"
           fi
 
-      - name: '5. NETWORK: Real World Git (Internal Timer)'
+      - name: '11. NETWORK: Git Clone (Linux Kernel)'
+        id: bench11
         run: |
-          echo "=== Linux Kernel Clone (Network + I/O) ==="
+          echo "=== NETWORK: Git Clone Linux Kernel (Shallow) ==="
           START=$(date +%s%N)
-          git clone --depth 1 https://github.com/torvalds/linux.git "/tmp/linux-${{ matrix.id }}" --quiet
+          git clone --depth 1 https://github.com/torvalds/linux.git "/tmp/linux-${{ matrix.id }}" --quiet 2>&1
           END=$(date +%s%N)
-          echo "ACTUAL Clone Time (Excluding Agent Lag): $(( (END - START) / 1000000 ))ms"
+          TIME=$(( (END - START) / 1000000 ))
+          echo "Linux Kernel Clone (shallow): ${TIME}ms"
+          du -sh "/tmp/linux-${{ matrix.id }}"
+          echo "bench11=${TIME}ms" >> $GITHUB_OUTPUT
 
-      - name: 'Cleanup'
+      - name: '12. NETWORK: Git Clone (Full History)'
+        id: bench12
+        run: |
+          echo "=== NETWORK: Git Clone Node.js (Full History) ==="
+          START=$(date +%s%N)
+          git clone https://github.com/nodejs/node.git "/tmp/node-${{ matrix.id }}" --quiet 2>&1
+          END=$(date +%s%N)
+          TIME=$(( (END - START) / 1000000 ))
+          echo "Node.js Full Clone: ${TIME}ms"
+          du -sh "/tmp/node-${{ matrix.id }}"
+          echo "bench12=${TIME}ms" >> $GITHUB_OUTPUT
+
+      - name: '13. NETWORK: Download Speed Test'
+        run: |
+          echo "=== NETWORK: Download 100MB from CDN ==="
+          START=$(date +%s%N)
+          curl -sL -o /dev/null https://releases.ubuntu.com/22.04/ubuntu-22.04.3-live-server-amd64.iso 2>&1
+          END=$(date +%s%N)
+          echo "100MB Download: $(( (END - START) / 1000000 ))ms"
+
+      - name: '14. PACKAGE MANAGER: npm Install'
+        id: bench14
+        run: |
+          echo "=== PACKAGE MANAGER: npm Install (Next.js deps) ==="
+          cd /tmp
+          rm -rf npm-bench 2>/dev/null
+          START=$(date +%s%N)
+          npx create-next-app@latest npm-bench --yes --no-tailwind --no-eslint --no-app --no-src-dir 2>&1 | tail -5
+          END=$(date +%s%N)
+          TIME=$(( (END - START) / 1000000 ))
+          echo "Next.js scaffold: ${TIME}ms"
+          du -sh npm-bench/node_modules 2>/dev/null || echo "node_modules not found"
+          echo "bench14=${TIME}ms" >> $GITHUB_OUTPUT
+
+      - name: '15. PACKAGE MANAGER: pip Install'
+        id: bench15
+        run: |
+          echo "=== PACKAGE MANAGER: pip Install (Data Science Stack) ==="
+          START=$(date +%s%N)
+          pip install --quiet numpy pandas scipy scikit-learn 2>&1
+          END=$(date +%s%N)
+          TIME=$(( (END - START) / 1000000 ))
+          echo "pip install numpy/pandas/scipy/sklearn: ${TIME}ms"
+          echo "bench15=${TIME}ms" >> $GITHUB_OUTPUT
+
+      - name: '16. BUILD: Docker Build'
+        id: bench16
+        run: |
+          echo "=== BUILD: Docker Build (Go App) ==="
+          if command -v docker &> /dev/null; then
+            cd /tmp
+            rm -rf docker-bench 2>/dev/null
+            mkdir -p docker-bench && cd docker-bench
+            cat > Dockerfile << 'EOF'
+            FROM golang:1.21-alpine AS builder
+            WORKDIR /app
+            RUN go version
+            COPY . .
+            RUN CGO_ENABLED=0 GOOS=linux go build -o app .
+            FROM alpine:latest
+            COPY --from=builder /app/app /app
+            CMD ["ls"]
+            EOF
+            echo "package main" > main.go
+            START=$(date +%s%N)
+            docker build -t docker-bench . 2>&1 | tail -3
+            END=$(date +%s%N)
+            TIME=$(( (END - START) / 1000000 ))
+            echo "Docker Build: ${TIME}ms"
+            echo "bench16=${TIME}ms" >> $GITHUB_OUTPUT
+          else
+            echo "Docker not available, skipping"
+            echo "bench16=N/A" >> $GITHUB_OUTPUT
+          fi
+
+      - name: '17. BUILD: Compile Go Application'
+        run: |
+          echo "=== BUILD: Go Compilation (golang.org/x/term) ==="
+          cd /tmp
+          rm -rf go-bench 2>/dev/null
+          START=$(date +%s%N)
+          GO111MODULE=on go install golang.org/x/term@latest 2>&1
+          END=$(date +%s%N)
+          echo "Go install x/term: $(( (END - START) / 1000000 ))ms"
+
+      - name: '18. BUILD: Compile Rust (cargo build)'
+        run: |
+          echo "=== BUILD: Rust Compilation ==="
+          if command -v cargo &> /dev/null; then
+            cd /tmp
+            rm -rf rust-bench 2>/dev/null
+            START=$(date +%s%N)
+            cargo new rust-bench 2>/dev/null
+            cd rust-bench
+            cargo build --release 2>&1 | tail -5
+            END=$(date +%s%N)
+            echo "Cargo build --release: $(( (END - START) / 1000000 ))ms"
+          else
+            echo "Rust not available, skipping"
+          fi
+
+      - name: '19. CONTAINER: Container Start Time'
+        run: |
+          echo "=== CONTAINER: Container Start Latency ==="
+          if command -v docker &> /dev/null; then
+            for i in 1 2 3; do
+              START=$(date +%s%N)
+              docker run --rm alpine echo "ready" > /dev/null 2>&1
+              END=$(date +%s%N)
+              echo "Run $i: $(( (END - START) / 1000000 ))ms"
+            done
+          else
+            echo "Docker not available, skipping"
+          fi
+
+      - name: '20. DATABASE: SQLite Operations'
+        run: |
+          echo "=== DATABASE: SQLite Write (100k rows) ==="
+          python3 -c "
+          import sqlite3, time
+          conn = sqlite3.connect(':memory:')
+          c = conn.cursor()
+          c.execute('CREATE TABLE bench (id INT, val TEXT)')
+          start = time.time()
+          for i in range(100000):
+              c.execute('INSERT INTO bench VALUES (?, ?)', (i, f'value{i}'))
+          conn.commit()
+          print(f'SQLite 100k inserts: {((time.time()-start)*1000):.0f}ms')
+          start = time.time()
+          c.execute('SELECT COUNT(*) FROM bench WHERE id > 50000').fetchone()
+          print(f'SQLite 50k select: {((time.time()-start)*1000):.0f}ms')
+          conn.close()
+          "
+
+      - name: '21. PARALLEL: Concurrent Processes'
+        run: |
+          echo "=== PARALLEL: 20 Concurrent curl requests ==="
+          START=$(date +%s%N)
+          for i in $(seq 1 20); do
+            curl -sL -o /dev/null https://api.github.com & 
+          done
+          wait
+          END=$(date +%s%N)
+          echo "20 parallel curl requests: $(( (END - START) / 1000000 ))ms"
+
+      - name: '22. REAL-WORLD: Full CI Pipeline Simulation'
+        id: bench22
+        run: |
+          echo "=== REAL-WORLD: CI Pipeline (Checkout + Install + Test) ==="
+          cd /tmp
+          rm -rf ci-sim 2>/dev/null
+          START=$(date +%s%N)
+          git clone --depth 1 https://github.com/actions/checkout.git ci-sim 2>&1
+          cd ci-sim
+          npm install --silent 2>&1 | tail -2
+          npm test -- --silent 2>&1 | tail -3
+          END=$(date +%s%N)
+          TIME=$(( (END - START) / 1000000 ))
+          echo "Full CI Pipeline: ${TIME}ms"
+          echo "bench22=${TIME}ms" >> $GITHUB_OUTPUT
+
+      - name: Summary
+        run: |
+          echo "============================================"
+          echo "BENCHMARK RESULTS: ${{ matrix.name }}"
+          echo "============================================"
+          echo ""
+          echo "| Benchmark | Result |"
+          echo "|-----------|--------|"
+          echo "| System | ${{ steps.sysinfo.outputs.sysinfo }} |"
+          echo "| 1. CPU Prime (sysbench) | ${{ steps.bench1.outputs.bench1 }} |"
+          echo "| 2. CPU XZ Compress (500MB) | ${{ steps.bench2.outputs.bench2 }} |"
+          echo "| 5. Disk 1GB Write | ${{ steps.bench5.outputs.bench5 }} |"
+          echo "| 6. Disk 1GB Read | ${{ steps.bench6.outputs.bench6 }} |"
+          echo "| 7. Disk 10k Files IOPS | ${{ steps.bench7.outputs.bench7 }} |"
+          echo "| 11. Git Clone Linux (shallow) | ${{ steps.bench11.outputs.bench11 }} |"
+          echo "| 12. Git Clone Node.js (full) | ${{ steps.bench12.outputs.bench12 }} |"
+          echo "| 14. npm Next.js Scaffold | ${{ steps.bench14.outputs.bench14 }} |"
+          echo "| 15. pip Data Science Stack | ${{ steps.bench15.outputs.bench15 }} |"
+          echo "| 16. Docker Build Go | ${{ steps.bench16.outputs.bench16 }} |"
+          echo "| 22. CI Pipeline (checkout+install+test) | ${{ steps.bench22.outputs.bench22 }} |"
+          echo ""
+          echo "============================================"
+          echo "Run this workflow with 'all' runners to compare"
+          echo "Chaser 9950X vs GitHub Standard vs Blacksmith"
+          echo "============================================"
+
+      - name: Cleanup
         if: always()
-        run: rm -rf testdata testdata.xz bench-iops "/tmp/linux-${{ matrix.id }}"
+        run: |
+          rm -rf testdata testdata.xz bench_1gb bench-iops
+          rm -rf "/tmp/linux-${{ matrix.id }}" "/tmp/node-${{ matrix.id }}"
+          rm -rf /tmp/npm-bench /tmp/docker-bench /tmp/go-bench /tmp/rust-bench /tmp/ci-sim
+          docker rmi docker-bench 2>/dev/null || true
+
+  compare-results:
+    needs: run-benchmarks
+    if: github.event.inputs.runner_type == 'all' || github.event.inputs.runner_type == ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compare All Runners
+        run: |
+          echo "============================================"
+          echo "RUNNER COMPARISON SUMMARY"
+          echo "============================================"
+          echo ""
+          echo "| Test | Chaser 9950X | GitHub Standard | Blacksmith |"
+          echo "|------|-------------|-----------------|------------|"
+          echo "| CPU Cores | See logs | See logs | See logs |"
+          echo "|"
+          echo "Run the workflow with each runner type individually to get detailed results:"
+          echo "- Select 'chaser' for Chaser 9950X"
+          echo "- Select 'standard' for GitHub Standard"  
+          echo "- Select 'blacksmith' for Blacksmith"
+          echo "- Select 'all' to run all three in parallel"
+          echo ""
+          echo "Key benchmarks to compare:"
+          echo "1. XZ Compression (multi-threaded CPU)"
+          echo "2. Sequential Disk I/O"
+          echo "3. Small file IOPS (overlay fs test)"
+          echo "4. Git clone times"
+          echo "5. npm/pip install times"
+          echo "6. Docker build times"
+          echo "7. Full CI pipeline simulation"
+          echo ""
+          echo "============================================"
