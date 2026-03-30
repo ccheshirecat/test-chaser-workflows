@@ -1,0 +1,110 @@
+name: Ultimate Runner Showdown 2026
+on:
+  workflow_dispatch:
+    inputs:
+      runner_type:
+        description: 'Runner to blast'
+        required: true
+        default: 'all'
+        type: choice
+        options: [all, chaser, standard, blacksmith]
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - id: set-matrix
+        run: |
+          CHASER='{"id":"chaser","name":"Chaser 9950X","labels":["self-hosted","chaser"]}'
+          STANDARD='{"id":"standard","name":"GitHub Standard","labels":"ubuntu-latest"}'
+          BLACKSMITH='{"id":"blacksmith","name":"Blacksmith","labels":"blacksmith-2vcpu-ubuntu-2404"}'
+          
+          CHOICE="${{ github.event.inputs.runner_type }}"
+          
+          if [ "$CHOICE" = "all" ]; then
+            JSON="{\"include\":[$CHASER,$STANDARD,$BLACKSMITH]}"
+          else
+            case $CHOICE in
+              "chaser") J=$CHASER ;;
+              "standard") J=$STANDARD ;;
+              "blacksmith") J=$BLACKSMITH ;;
+            esac
+            JSON="{\"include\":[$J]}"
+          fi
+          echo "matrix=$JSON" >> $GITHUB_OUTPUT
+
+  run-benchmarks:
+    needs: setup
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    runs-on: ${{ matrix.labels }}
+    name: 'Bench: ${{ matrix.name }}'
+    steps:
+      - name: 🛠️ Environment Prep
+        run: |
+          python3 -m venv venv
+          ./venv/bin/pip install --upgrade pip
+          ./venv/bin/pip install numpy scipy
+
+      - name: 🚀 High-Intensity Compute (AVX-512)
+        id: compute
+        run: |
+          # The '|' below fixes the Line 71 error by allowing a multi-line script block
+          cat << 'EOF' > stress.py
+          import numpy as np
+          import time
+          # 5000x5000 float32 matmul heavily utilizes AVX-512 and L3 cache
+          size = 5000 
+          a = np.random.rand(size, size).astype(np.float32)
+          b = np.random.rand(size, size).astype(np.float32)
+          start = time.time()
+          c = np.dot(a, b)
+          duration = (time.time() - start) * 1000
+          print(f"RESULT={duration:.0f}")
+          EOF
+          
+          RAW_RES=$(./venv/bin/python3 stress.py | grep RESULT= | cut -d= -f2)
+          echo "ms=${RAW_RES}ms" >> $GITHUB_OUTPUT
+          echo "Matmul 5k: ${RAW_RES}ms"
+
+      - name: 📂 I/O: 50k Small File "Burst"
+        id: io
+        run: |
+          mkdir burst-io && cd burst-io
+          START=$(date +%s%N)
+          # Creating 50,000 files targets the latency of network-attached storage
+          for i in {1..50000}; do echo "data" > $i.txt; done
+          sync
+          END=$(date +%s%N)
+          TIME=$(( (END - START) / 1000000 ))
+          echo "ms=${TIME}ms" >> $GITHUB_OUTPUT
+          echo "50k Files Created in ${TIME}ms"
+
+      - name: 📦 Build: SWC / Next.js Compilation
+        id: build
+        run: |
+          cd /tmp
+          rm -rf large-app && mkdir large-app && cd large-app
+          npx --yes create-next-app@latest . --typescript --tailwind --app --use-npm --no-install > /dev/null
+          START=$(date +%s%N)
+          npm install --quiet
+          npm run build --quiet
+          END=$(date +%s%N)
+          TIME=$(( (END - START) / 1000000 ))
+          echo "ms=${TIME}ms" >> $GITHUB_OUTPUT
+
+      - name: 📊 Results Summary
+        run: |
+          echo "### Runner: ${{ matrix.name }} Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Test | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "| --- | --- |" >> $GITHUB_STEP_SUMMARY
+          echo "| **AVX-512 Matmul (Compute)** | ${{ steps.compute.outputs.ms }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **50k File I/O Burst** | ${{ steps.io.outputs.ms }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Full Next.js Build** | ${{ steps.build.outputs.ms }} |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf venv stress.py burst-io /tmp/large-app
