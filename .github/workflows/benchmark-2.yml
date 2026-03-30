@@ -70,9 +70,6 @@ jobs:
           echo "ms=${RAW_RES}ms" >> $GITHUB_OUTPUT
           echo "Matmul 5k: ${RAW_RES}ms"
 
-      - name: 📂 I/O: 50k Small File "Burst"
-        id: io
-        run: |
           mkdir -p burst-io && cd burst-io
           START=$(date +%s%N)
           # Testing the IOPS limits of the filesystem
@@ -85,8 +82,6 @@ jobs:
           echo "ms=${TIME}ms" >> $GITHUB_OUTPUT
           echo "50k Files Created in ${TIME}ms"
 
-      - name: 📊 Results Summary
-        run: |
           echo "### Runner: ${{ matrix.name }} Summary" >> $GITHUB_STEP_SUMMARY
           echo "| Test | Result |" >> $GITHUB_STEP_SUMMARY
           echo "| --- | --- |" >> $GITHUB_STEP_SUMMARY
